@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { nitro } from "nitro/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -15,6 +16,10 @@ export default defineConfig({
       server: { entry: "server" },
     }),
     viteReact(),
+    // Nitro builds the server output for deployment; preset is pinned to
+    // vercel since Nitro's SSR bundle needs a target-specific adapter and
+    // auto-detection isn't reliable across all Vercel build environments.
+    nitro({ preset: "vercel" }),
   ],
   resolve: {
     dedupe: ["react", "react-dom", "@tanstack/react-router", "@tanstack/react-start"],
