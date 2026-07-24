@@ -1,8 +1,14 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, useFrame } from "@react-three/fiber";
 import { Environment, MeshTransmissionMaterial, Sparkles } from "@react-three/drei";
 import * as THREE from "three";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
+import { easeOutCubic, introProgress, type IntroState } from "./HeroIntro";
+
+type IntroRef = React.RefObject<IntroState> | undefined;
+
+// Clef orientation at the very start of the intro turn (radians).
+const INTRO_START_YAW = -1.9;
 
 /**
  * Clean, single-shape treble-clef silhouette (filled path).
@@ -69,6 +75,37 @@ const KEY_COLOR = "#8FA3C9";
 const FILL_COLOR = "#3a4570";
 const KEY_LIGHT_BASE: [number, number, number] = [-3.2, 2.2, 4.6];
 
+/**
+ * Soft amber backlight card placed behind the clef. Over a near-black page the
+ * glass would otherwise transmit "black" and read as a solid dark object — this
+ * gives it something bright and warm to refract, so the transparency is obvious
+ * and the amber cast comes through the body, not just the edges.
+ */
+function BackdropGlow() {
+  const texture = useMemo(() => {
+    const size = 256;
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const ctx = c.getContext("2d")!;
+    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    g.addColorStop(0, "rgba(248, 214, 150, 0.95)");
+    g.addColorStop(0.45, "rgba(226, 158, 92, 0.4)");
+    g.addColorStop(1, "rgba(226, 158, 92, 0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+    return new THREE.CanvasTexture(c);
+  }, []);
+
+  useEffect(() => () => texture.dispose(), [texture]);
+
+  return (
+    <mesh position={[0, 0.1, -3]} scale={[4.8, 5.8, 1]}>
+      <planeGeometry args={[1, 1]} />
+      <meshBasicMaterial map={texture} transparent depthWrite={false} toneMapped={false} opacity={0.78} />
+    </mesh>
+  );
+}
+
 function useMediaQuery(query: string) {
   const [matches, setMatches] = useState(false);
   useEffect(() => {
@@ -85,13 +122,18 @@ function TrebleClefMesh({
   isMobile,
   reducedMotion,
   keyLightRef,
+  pointerRef,
+  introRef,
 }: {
   isMobile: boolean;
   reducedMotion: boolean;
   keyLightRef: React.RefObject<THREE.DirectionalLight | null>;
+  pointerRef: React.RefObject<{ x: number; y: number }>;
+  introRef: IntroRef;
 }) {
   const outerRef = useRef<THREE.Group>(null);
   const tiltRef = useRef<THREE.Group>(null);
+  const introSettledRef = useRef(false);
 
   const geometry = useMemo(() => {
     const loader = new SVGLoader();
@@ -126,28 +168,70 @@ function TrebleClefMesh({
   useFrame((state, delta) => {
     const t = state.clock.elapsedTime;
 
+    // ── Intro turn ─────────────────────────────────────────────
+    // While the cinematic plays, the clef rotates through a slow deliberate
+    // turn to its resting orientation and everything else is held still, so
+    // the light sweeps across it and nothing fights the choreography.
+    const intro = introRef?.current;
+    if (intro?.active) {
+      introSettledRef.current = false;
+      const p = easeOutCubic(introProgress(intro));
+      if (outerRef.current) {
+        outerRef.current.rotation.y = INTRO_START_YAW * (1 - p);
+        outerRef.current.position.y = 0;
+      }
+      if (tiltRef.current) {
+        tiltRef.current.rotation.x = 0;
+        tiltRef.current.rotation.y = 0;
+      }
+      if (keyLightRef.current) {
+        keyLightRef.current.position.set(...KEY_LIGHT_BASE);
+      }
+      return;
+    }
+
+    // First frame after the intro ends (naturally or via skip): snap the clef
+    // to its exact resting pose so a skip mid-turn can't leave it askew, then
+    // idle motion continues seamlessly from there.
+    if (intro && !introSettledRef.current) {
+      introSettledRef.current = true;
+      if (outerRef.current) {
+        outerRef.current.rotation.y = 0;
+        outerRef.current.position.y = 0;
+      }
+    }
+
+    // Pointer is tracked at the WINDOW level (see TrebleClef3D) so the clef
+    // reacts to the cursor anywhere on the page, not only while it happens to
+    // be directly over the small canvas.
+    const px = pointerRef.current.x;
+    const py = pointerRef.current.y;
+
     if (outerRef.current) {
       if (reducedMotion) {
         outerRef.current.position.y = 0;
       } else {
-        // extremely slow breathing bob + near-imperceptible ambient rotation
-        outerRef.current.position.y = Math.sin(t * 0.35) * 0.16;
-        outerRef.current.rotation.y += delta * 0.035;
+        // slow breathing bob + gentle ambient rotation. position.y is damped
+        // (not assigned) so the handoff out of the intro never pops.
+        const bobTarget = Math.sin(t * 0.5) * 0.2;
+        outerRef.current.position.y = THREE.MathUtils.damp(outerRef.current.position.y, bobTarget, 3, delta);
+        outerRef.current.rotation.y += delta * 0.06;
       }
     }
 
     const interactive = !isMobile && !reducedMotion;
 
     if (tiltRef.current) {
-      const targetX = interactive ? -state.pointer.y * 0.14 : 0;
-      const targetY = interactive ? state.pointer.x * 0.18 : 0;
+      // py is +1 at bottom of viewport → negate so cursor-up tilts the top back
+      const targetX = interactive ? py * 0.16 : 0;
+      const targetY = interactive ? px * 0.2 : 0;
       tiltRef.current.rotation.x = THREE.MathUtils.damp(tiltRef.current.rotation.x, targetX, 5, delta);
       tiltRef.current.rotation.y = THREE.MathUtils.damp(tiltRef.current.rotation.y, targetY, 5, delta);
     }
 
     if (keyLightRef.current) {
-      const targetX = interactive ? KEY_LIGHT_BASE[0] + state.pointer.x * 1.6 : KEY_LIGHT_BASE[0];
-      const targetY = interactive ? KEY_LIGHT_BASE[1] + state.pointer.y * 1.1 : KEY_LIGHT_BASE[1];
+      const targetX = interactive ? KEY_LIGHT_BASE[0] + px * 2.2 : KEY_LIGHT_BASE[0];
+      const targetY = interactive ? KEY_LIGHT_BASE[1] - py * 1.4 : KEY_LIGHT_BASE[1];
       keyLightRef.current.position.x = THREE.MathUtils.damp(keyLightRef.current.position.x, targetX, 5, delta);
       keyLightRef.current.position.y = THREE.MathUtils.damp(keyLightRef.current.position.y, targetY, 5, delta);
     }
@@ -161,21 +245,21 @@ function TrebleClefMesh({
             samples={isMobile ? 3 : 6}
             resolution={isMobile ? 256 : 512}
             transmission={1}
-            roughness={0.14}
-            thickness={1.5}
+            roughness={0.05}
+            thickness={1.2}
             ior={1.5}
-            chromaticAberration={isMobile ? 0.02 : 0.045}
+            chromaticAberration={isMobile ? 0.03 : 0.06}
             anisotropy={0.2}
             anisotropicBlur={0.1}
-            distortion={0.035}
-            distortionScale={0.2}
+            distortion={0.04}
+            distortionScale={0.25}
             temporalDistortion={reducedMotion ? 0 : 0.08}
-            clearcoat={0.25}
-            clearcoatRoughness={0.25}
-            envMapIntensity={isMobile ? 0.7 : 0.95}
-            attenuationColor={new THREE.Color("#e2a355")}
-            attenuationDistance={0.9}
-            color={new THREE.Color("#ffe4b8")}
+            clearcoat={0.4}
+            clearcoatRoughness={0.1}
+            envMapIntensity={isMobile ? 0.6 : 0.75}
+            attenuationColor={new THREE.Color("#f0d29a")}
+            attenuationDistance={1.5}
+            color={new THREE.Color("#ffffff")}
             backside={!isMobile}
           />
         </mesh>
@@ -184,31 +268,79 @@ function TrebleClefMesh({
   );
 }
 
-function ScrollCameraRig({
+function CameraRig({
   scrollRef,
   reducedMotion,
+  introRef,
 }: {
   scrollRef: React.RefObject<number>;
   reducedMotion: boolean;
+  introRef: IntroRef;
 }) {
-  const { camera } = useThree();
-  useFrame((_, delta) => {
-    if (reducedMotion) return;
-    const p = scrollRef.current;
-    const targetZ = 8 + p * 1.6;
-    const targetY = -p * 0.9;
-    camera.position.z = THREE.MathUtils.damp(camera.position.z, targetZ, 4, delta);
-    camera.position.y = THREE.MathUtils.damp(camera.position.y, targetY, 4, delta);
+  const settledRef = useRef(false);
+  useFrame((state, delta) => {
+    const cam = state.camera;
+
+    // Intro push-in: start pulled back and settle to the resting z=8 / y=0.
+    // Because the settled scroll target at scroll=0 is exactly z=8 / y=0, the
+    // handoff to the scroll rig is seamless.
+    const intro = introRef?.current;
+    if (intro?.active) {
+      settledRef.current = false;
+      const p = easeOutCubic(introProgress(intro));
+      cam.position.z = 13.5 - p * 5.5; // 13.5 → 8
+      cam.position.y = 0.55 - p * 0.55; // 0.55 → 0
+      return;
+    }
+
+    // Skip mid-push jumps the camera straight to the resting framing.
+    if (intro && !settledRef.current) {
+      settledRef.current = true;
+      cam.position.z = 8;
+      cam.position.y = 0;
+    }
+
+    const scroll = reducedMotion ? 0 : scrollRef.current;
+    const targetZ = 8 + scroll * 1.6;
+    const targetY = -scroll * 0.9;
+    cam.position.z = THREE.MathUtils.damp(cam.position.z, targetZ, 4, delta);
+    cam.position.y = THREE.MathUtils.damp(cam.position.y, targetY, 4, delta);
   });
   return null;
 }
 
-export function TrebleClef3D() {
+export function TrebleClef3D({
+  introRef,
+  introActive = false,
+}: {
+  introRef?: React.RefObject<IntroState>;
+  introActive?: boolean;
+} = {}) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
 
   const isMobile = useMediaQuery("(max-width: 768px), (hover: none) and (pointer: coarse)");
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+
+  // Fade the whole clef canvas up out of black at the start of the intro. Kept
+  // as a CSS opacity transition (not a per-frame write) so it costs nothing.
+  const [clefRevealed, setClefRevealed] = useState(!introActive);
+  useEffect(() => {
+    if (!introActive) {
+      setClefRevealed(true);
+      return;
+    }
+    setClefRevealed(false);
+    // Two frames so the opacity:0 state paints before the transition to 1.
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => setClefRevealed(true));
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [introActive]);
 
   const scrollRef = useRef(0);
   useEffect(() => {
@@ -220,6 +352,20 @@ export function TrebleClef3D() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  // Track the cursor across the whole viewport (normalized to -1..1) rather than
+  // relying on R3F's state.pointer, which only updates while the cursor is over
+  // the canvas — that is why the tilt/light previously felt dead on the page.
+  const pointerRef = useRef({ x: 0, y: 0 });
+  useEffect(() => {
+    if (isMobile) return;
+    const onMove = (e: PointerEvent) => {
+      pointerRef.current.x = (e.clientX / window.innerWidth) * 2 - 1;
+      pointerRef.current.y = (e.clientY / window.innerHeight) * 2 - 1;
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => window.removeEventListener("pointermove", onMove);
+  }, [isMobile]);
+
   const keyLightRef = useRef<THREE.DirectionalLight>(null);
 
   if (!mounted) {
@@ -227,18 +373,25 @@ export function TrebleClef3D() {
   }
 
   return (
-    <div className="relative aspect-[3/4.2] w-full max-w-[460px]">
+    <div
+      className="relative aspect-[3/4.2] w-full max-w-[460px]"
+      style={{
+        opacity: clefRevealed ? 1 : 0,
+        transition: "opacity 1.2s cubic-bezier(0.4, 0, 0.2, 1)",
+      }}
+    >
       <Canvas
         camera={{ position: [0, 0, 8], fov: 36 }}
         dpr={isMobile ? [1, 1.5] : [1, 2]}
         gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
       >
-        <ambientLight intensity={0.22} color={FILL_COLOR} />
-        <directionalLight position={[2.2, 5, -4.5]} intensity={1.1} color={RIM_COLOR} />
-        <directionalLight ref={keyLightRef} position={KEY_LIGHT_BASE} intensity={0.9} color={KEY_COLOR} />
+        <ambientLight intensity={0.18} color={FILL_COLOR} />
+        <directionalLight position={[2.2, 5, -4.5]} intensity={1.3} color={RIM_COLOR} />
+        <directionalLight ref={keyLightRef} position={KEY_LIGHT_BASE} intensity={1.1} color={KEY_COLOR} />
+        <BackdropGlow />
         <Suspense fallback={null}>
-          <TrebleClefMesh isMobile={isMobile} reducedMotion={reducedMotion} keyLightRef={keyLightRef} />
-          <Environment preset="sunset" background={false} environmentIntensity={isMobile ? 0.6 : 0.85} />
+          <TrebleClefMesh isMobile={isMobile} reducedMotion={reducedMotion} keyLightRef={keyLightRef} pointerRef={pointerRef} introRef={introRef} />
+          <Environment preset="studio" background={false} environmentIntensity={isMobile ? 0.55 : 0.7} />
           {!reducedMotion && (
             <Sparkles
               count={isMobile ? 14 : 50}
@@ -251,7 +404,7 @@ export function TrebleClef3D() {
             />
           )}
         </Suspense>
-        <ScrollCameraRig scrollRef={scrollRef} reducedMotion={reducedMotion} />
+        <CameraRig scrollRef={scrollRef} reducedMotion={reducedMotion} introRef={introRef} />
       </Canvas>
     </div>
   );

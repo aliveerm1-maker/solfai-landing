@@ -2,6 +2,13 @@ import { createFileRoute } from "@tanstack/react-router";
 import choirHero from "@/assets/choir-hero.jpg";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { TrebleClef3D } from "@/components/TrebleClef3D";
+import {
+  useIntroSequence,
+  IntroLayer,
+  introProgress,
+  easeOutCubic,
+  clamp01,
+} from "@/components/HeroIntro";
 
 export const Route = createFileRoute("/")({
   component: LandingPage,
@@ -111,12 +118,57 @@ function Nav() {
 /* ─────────────────────────────  HERO  ───────────────────────────── */
 
 function Hero() {
+  const { phase, introRef, introActive } = useIntroSequence();
+  const playing = phase === "playing";
+
+  const heroBgRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
+  const wordmarkRef = useRef<HTMLDivElement>(null);
+
+  // One rAF crossfades the DOM layers (black scrim out, hero background + text
+  // in, wordmark blur-in-then-out) from the same clock the 3D scene reads, so
+  // the whole sequence stays in lockstep and settles to the resting hero.
+  useEffect(() => {
+    if (phase !== "playing") return;
+    const s = introRef.current;
+    let raf = 0;
+    const tick = () => {
+      const p = introProgress(s);
+      const reveal = easeOutCubic(clamp01((p - 0.6) / 0.4));
+      if (scrimRef.current) scrimRef.current.style.opacity = String(1 - reveal);
+      if (heroBgRef.current) heroBgRef.current.style.opacity = String(reveal);
+      if (textRef.current) textRef.current.style.opacity = String(easeOutCubic(clamp01((p - 0.66) / 0.34)));
+
+      // Wordmark clears out before the hero headline ramps in, so the two large
+      // serif texts never fight for the same space during the crossfade.
+      const inP = easeOutCubic(clamp01((p - 0.16) / 0.3));
+      const outP = clamp01((p - 0.56) / 0.2);
+      const wo = Math.max(0, inP * (1 - outP));
+      if (wordmarkRef.current) {
+        wordmarkRef.current.style.opacity = String(wo);
+        wordmarkRef.current.style.filter = `blur(${(1 - inP) * 14}px)`;
+        wordmarkRef.current.style.transform = `translateY(${(1 - inP) * 14}px)`;
+      }
+      if (p < 1 && s.active) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [phase, introRef]);
+
   return (
-    <section className="relative overflow-hidden" style={{ background: "var(--grad-hero), var(--bg)" }}>
+    <section className={`relative overflow-hidden ${playing ? "z-[70]" : ""}`}>
+      {/* Hero background lifted into its own layer so the intro can hold it at
+          black and crossfade the gradient in at the handoff. */}
+      <div
+        ref={heroBgRef}
+        className="pointer-events-none absolute inset-0"
+        style={{ background: "var(--grad-hero), var(--bg)", opacity: playing ? 0 : 1 }}
+      />
       {/* subtle staff lines */}
       <StaffBackdrop />
       <div className="relative mx-auto grid max-w-[1240px] items-center gap-14 px-6 py-32 md:grid-cols-[1.1fr_0.9fr] md:px-10 md:py-40">
-        <div className="fade-up">
+        <div ref={textRef} className="fade-up" style={{ opacity: playing ? 0 : 1 }}>
           <div className="eyebrow eyebrow-dot text-teal">Solfai Preview · v0.1</div>
           <h1 className="serif mt-6 text-[clamp(46px,7.2vw,92px)] font-[600] leading-[1.02] tracking-[-0.02em]">
             Sight-Read
@@ -144,10 +196,13 @@ function Hero() {
           </div>
         </div>
 
-        <div className="relative flex items-center justify-center">
-          <TrebleClef3D />
+        {/* Lifted above the scrim (z-60) during the intro so the clef reads as
+            floating in the darkness while everything else stays black. */}
+        <div className={`relative flex items-center justify-center ${playing ? "z-[65]" : ""}`}>
+          <TrebleClef3D introRef={introRef} introActive={introActive} />
         </div>
       </div>
+      {playing && <IntroLayer scrimRef={scrimRef} wordmarkRef={wordmarkRef} />}
     </section>
   );
 }
