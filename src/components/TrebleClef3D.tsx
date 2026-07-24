@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { Environment, Float, MeshTransmissionMaterial } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Environment, MeshTransmissionMaterial, Sparkles } from "@react-three/drei";
 import * as THREE from "three";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 
@@ -63,8 +63,35 @@ C 112 156 115 161 120 163
 Z
 "/></svg>`;
 
-function TrebleClefMesh() {
-  const groupRef = useRef<THREE.Group>(null);
+/** Brand-matched studio three-point rig: warm amber-bronze rim, cool key, soft indigo fill. */
+const RIM_COLOR = "#E9A16B";
+const KEY_COLOR = "#8FA3C9";
+const FILL_COLOR = "#3a4570";
+const KEY_LIGHT_BASE: [number, number, number] = [-3.2, 2.2, 4.6];
+
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    setMatches(mql.matches);
+    const handler = (e: MediaQueryListEvent) => setMatches(e.matches);
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, [query]);
+  return matches;
+}
+
+function TrebleClefMesh({
+  isMobile,
+  reducedMotion,
+  keyLightRef,
+}: {
+  isMobile: boolean;
+  reducedMotion: boolean;
+  keyLightRef: React.RefObject<THREE.DirectionalLight | null>;
+}) {
+  const outerRef = useRef<THREE.Group>(null);
+  const tiltRef = useRef<THREE.Group>(null);
 
   const geometry = useMemo(() => {
     const loader = new SVGLoader();
@@ -94,44 +121,106 @@ function TrebleClefMesh() {
     return geo;
   }, []);
 
-  useFrame((_, delta) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y += delta * 0.5;
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  useFrame((state, delta) => {
+    const t = state.clock.elapsedTime;
+
+    if (outerRef.current) {
+      if (reducedMotion) {
+        outerRef.current.position.y = 0;
+      } else {
+        // extremely slow breathing bob + near-imperceptible ambient rotation
+        outerRef.current.position.y = Math.sin(t * 0.35) * 0.16;
+        outerRef.current.rotation.y += delta * 0.035;
+      }
+    }
+
+    const interactive = !isMobile && !reducedMotion;
+
+    if (tiltRef.current) {
+      const targetX = interactive ? -state.pointer.y * 0.14 : 0;
+      const targetY = interactive ? state.pointer.x * 0.18 : 0;
+      tiltRef.current.rotation.x = THREE.MathUtils.damp(tiltRef.current.rotation.x, targetX, 5, delta);
+      tiltRef.current.rotation.y = THREE.MathUtils.damp(tiltRef.current.rotation.y, targetY, 5, delta);
+    }
+
+    if (keyLightRef.current) {
+      const targetX = interactive ? KEY_LIGHT_BASE[0] + state.pointer.x * 1.6 : KEY_LIGHT_BASE[0];
+      const targetY = interactive ? KEY_LIGHT_BASE[1] + state.pointer.y * 1.1 : KEY_LIGHT_BASE[1];
+      keyLightRef.current.position.x = THREE.MathUtils.damp(keyLightRef.current.position.x, targetX, 5, delta);
+      keyLightRef.current.position.y = THREE.MathUtils.damp(keyLightRef.current.position.y, targetY, 5, delta);
     }
   });
 
   return (
-    <group ref={groupRef}>
-      <Float speed={1.1} rotationIntensity={0.05} floatIntensity={0.35}>
+    <group ref={outerRef}>
+      <group ref={tiltRef}>
         <mesh geometry={geometry}>
           <MeshTransmissionMaterial
-            samples={6}
-            resolution={512}
+            samples={isMobile ? 3 : 6}
+            resolution={isMobile ? 256 : 512}
             transmission={1}
-            roughness={0.02}
-            thickness={0.4}
-            ior={1.45}
-            chromaticAberration={0.06}
-            anisotropy={0.15}
-            distortion={0.05}
-            distortionScale={0.3}
-            temporalDistortion={0}
+            roughness={0.035}
+            thickness={1.1}
+            ior={1.5}
+            chromaticAberration={isMobile ? 0.02 : 0.045}
+            anisotropy={0.2}
+            anisotropicBlur={0.1}
+            distortion={0.035}
+            distortionScale={0.2}
+            temporalDistortion={reducedMotion ? 0 : 0.08}
             clearcoat={1}
-            clearcoatRoughness={0.02}
+            clearcoatRoughness={0.03}
+            envMapIntensity={isMobile ? 1.1 : 1.6}
             attenuationColor={new THREE.Color("#f2d59a")}
-            attenuationDistance={3}
+            attenuationDistance={2.6}
             color={new THREE.Color("#ffffff")}
-            backside
+            backside={!isMobile}
           />
         </mesh>
-      </Float>
+      </group>
     </group>
   );
+}
+
+function ScrollCameraRig({
+  scrollRef,
+  reducedMotion,
+}: {
+  scrollRef: React.RefObject<number>;
+  reducedMotion: boolean;
+}) {
+  const { camera } = useThree();
+  useFrame((_, delta) => {
+    if (reducedMotion) return;
+    const p = scrollRef.current;
+    const targetZ = 8 + p * 1.6;
+    const targetY = -p * 0.9;
+    camera.position.z = THREE.MathUtils.damp(camera.position.z, targetZ, 4, delta);
+    camera.position.y = THREE.MathUtils.damp(camera.position.y, targetY, 4, delta);
+  });
+  return null;
 }
 
 export function TrebleClef3D() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => { setMounted(true); }, []);
+
+  const isMobile = useMediaQuery("(max-width: 768px), (hover: none) and (pointer: coarse)");
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+
+  const scrollRef = useRef(0);
+  useEffect(() => {
+    const onScroll = () => {
+      scrollRef.current = Math.min(1, Math.max(0, window.scrollY / (window.innerHeight * 0.9)));
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const keyLightRef = useRef<THREE.DirectionalLight>(null);
 
   if (!mounted) {
     return <div className="aspect-[3/4.2] w-full max-w-[460px]" />;
@@ -141,16 +230,28 @@ export function TrebleClef3D() {
     <div className="relative aspect-[3/4.2] w-full max-w-[460px]">
       <Canvas
         camera={{ position: [0, 0, 8], fov: 36 }}
-        dpr={[1, 2]}
+        dpr={isMobile ? [1, 1.5] : [1, 2]}
         gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
       >
-        <ambientLight intensity={0.3} />
-        <directionalLight position={[5, 6, 5]} intensity={1.1} color="#fff2d0" />
-        <directionalLight position={[-4, -3, 4]} intensity={0.5} color="#c9b98a" />
+        <ambientLight intensity={0.22} color={FILL_COLOR} />
+        <directionalLight position={[2.2, 5, -4.5]} intensity={2.4} color={RIM_COLOR} />
+        <directionalLight ref={keyLightRef} position={KEY_LIGHT_BASE} intensity={2} color={KEY_COLOR} />
         <Suspense fallback={null}>
-          <TrebleClefMesh />
-          <Environment preset="warehouse" />
+          <TrebleClefMesh isMobile={isMobile} reducedMotion={reducedMotion} keyLightRef={keyLightRef} />
+          <Environment preset="studio" background={false} environmentIntensity={isMobile ? 1.0 : 1.35} />
+          {!reducedMotion && (
+            <Sparkles
+              count={isMobile ? 14 : 50}
+              scale={isMobile ? [5, 6, 4] : [6.5, 7.5, 5]}
+              size={isMobile ? 1.6 : 2.2}
+              speed={isMobile ? 0.08 : 0.15}
+              opacity={isMobile ? 0.22 : 0.32}
+              color="#f2d59a"
+              noise={1}
+            />
+          )}
         </Suspense>
+        <ScrollCameraRig scrollRef={scrollRef} reducedMotion={reducedMotion} />
       </Canvas>
     </div>
   );
