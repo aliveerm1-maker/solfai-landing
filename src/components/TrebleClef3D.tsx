@@ -161,8 +161,8 @@ function TrebleClefMesh({
             samples={isMobile ? 3 : 6}
             resolution={isMobile ? 256 : 512}
             transmission={1}
-            roughness={0.035}
-            thickness={1.1}
+            roughness={0.14}
+            thickness={1.5}
             ior={1.5}
             chromaticAberration={isMobile ? 0.02 : 0.045}
             anisotropy={0.2}
@@ -170,12 +170,12 @@ function TrebleClefMesh({
             distortion={0.035}
             distortionScale={0.2}
             temporalDistortion={reducedMotion ? 0 : 0.08}
-            clearcoat={1}
-            clearcoatRoughness={0.03}
-            envMapIntensity={isMobile ? 1.1 : 1.6}
-            attenuationColor={new THREE.Color("#f2d59a")}
-            attenuationDistance={2.6}
-            color={new THREE.Color("#ffffff")}
+            clearcoat={0.25}
+            clearcoatRoughness={0.25}
+            envMapIntensity={isMobile ? 0.7 : 0.95}
+            attenuationColor={new THREE.Color("#e2a355")}
+            attenuationDistance={0.9}
+            color={new THREE.Color("#ffe4b8")}
             backside={!isMobile}
           />
         </mesh>
@@ -234,11 +234,11 @@ export function TrebleClef3D() {
         gl={{ antialias: true, alpha: true, powerPreference: "high-performance" }}
       >
         <ambientLight intensity={0.22} color={FILL_COLOR} />
-        <directionalLight position={[2.2, 5, -4.5]} intensity={2.4} color={RIM_COLOR} />
-        <directionalLight ref={keyLightRef} position={KEY_LIGHT_BASE} intensity={2} color={KEY_COLOR} />
+        <directionalLight position={[2.2, 5, -4.5]} intensity={1.1} color={RIM_COLOR} />
+        <directionalLight ref={keyLightRef} position={KEY_LIGHT_BASE} intensity={0.9} color={KEY_COLOR} />
         <Suspense fallback={null}>
           <TrebleClefMesh isMobile={isMobile} reducedMotion={reducedMotion} keyLightRef={keyLightRef} />
-          <Environment preset="studio" background={false} environmentIntensity={isMobile ? 1.0 : 1.35} />
+          <Environment preset="sunset" background={false} environmentIntensity={isMobile ? 0.6 : 0.85} />
           {!reducedMotion && (
             <Sparkles
               count={isMobile ? 14 : 50}
